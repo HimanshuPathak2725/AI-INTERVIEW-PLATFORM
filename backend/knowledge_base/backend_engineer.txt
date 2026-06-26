@@ -1,0 +1,15 @@
+Backend engineers are expected to design APIs that are easy to consume, observable, secure, and resilient under load. REST endpoints should use clear resource names, correct HTTP methods, stable response shapes, pagination for large collections, and idempotency for retryable operations. GraphQL can reduce over-fetching but requires careful query limits, authorization checks, and cache strategy.
+
+Relational databases are useful when the domain needs transactions, constraints, joins, and durable consistency. NoSQL stores are useful for high write throughput, flexible schemas, and access patterns where denormalized records are acceptable. Backend interviews often test whether a candidate can explain indexes, isolation levels, transactions, normalization, query planning, and migration safety.
+
+A scalable backend typically separates request handling, business services, persistence, and background jobs. Services should validate inputs at the edge, keep domain rules in a service layer, and isolate database access through repositories or explicit query modules. This separation makes the codebase testable and easier to evolve.
+
+Authentication verifies identity, while authorization decides what that identity can do. JWTs are common for stateless APIs, but they need short lifetimes, secure signing, refresh-token handling, and careful revocation strategy. Role-based access control is simple to reason about, while attribute-based rules handle more complex policy decisions.
+
+Distributed systems introduce partial failure, retries, duplicate messages, race conditions, and eventual consistency. Reliable systems use idempotency keys, optimistic locking, durable queues, circuit breakers, timeouts, backoff, and structured logging. Candidates should be able to reason about consistency, availability, and operational tradeoffs.
+
+Caching improves latency and reduces load, but cache invalidation is difficult. Common patterns include read-through caching, write-through caching, TTL-based freshness, and explicit invalidation after writes. A strong answer discusses stale data, cache stampede prevention, key design, and metrics.
+
+Observability includes logs, metrics, traces, and health checks. Production services should expose request latency, error rates, throughput, dependency failures, database timings, and queue depth. Good interview answers connect observability to debugging real incidents and measuring service-level objectives.
+
+Testing backend systems requires unit tests for business rules, integration tests for API and database behavior, and contract tests when services communicate. Good tests isolate external systems, seed realistic data, and verify error paths as well as happy paths.

@@ -1,0 +1,15 @@
+Machine learning systems should begin with a clear problem definition, measurable success criteria, and an understanding of the data distribution. Candidates should explain the difference between classification, regression, ranking, clustering, and generation tasks, and choose evaluation metrics that match the product objective.
+
+The bias-variance tradeoff describes underfitting and overfitting. High bias models are too simple to capture the signal, while high variance models fit noise and fail to generalize. Regularization, cross-validation, feature engineering, more data, and model selection are common ways to control this tradeoff.
+
+Data quality is often more important than model choice. Strong ML engineers investigate missing values, leakage, class imbalance, duplicated records, label noise, train-test contamination, and drift. They build repeatable preprocessing pipelines so training and inference apply the same transformations.
+
+Embeddings map text, images, or other objects into vectors where semantic similarity can be measured. Retrieval-augmented generation uses embeddings and a vector store to retrieve relevant context before asking a language model to produce an answer. Retrieval quality depends on chunking, metadata, query construction, embedding model, and reranking.
+
+RAG systems should be evaluated beyond subjective answer quality. Useful metrics include retrieval precision, recall at k, groundedness, answer faithfulness, latency, token cost, and user task success. Failure modes include irrelevant retrieval, missing context, hallucination, stale knowledge, and prompt injection.
+
+Model evaluation should match real-world usage. Accuracy can be misleading for imbalanced datasets, so precision, recall, F1 score, ROC-AUC, PR-AUC, calibration, and confusion matrices are important. For ranking or retrieval tasks, mean reciprocal rank and normalized discounted cumulative gain are common.
+
+Deployment introduces monitoring and operational concerns. ML systems should track input drift, prediction drift, data quality, model latency, error rates, and business metrics. Rollbacks, shadow deployments, canary releases, and human review workflows reduce production risk.
+
+Responsible AI work includes privacy, fairness, explainability, security, and governance. Candidates should be able to discuss sensitive data handling, model limitations, evaluation across subgroups, and guardrails for generated outputs.

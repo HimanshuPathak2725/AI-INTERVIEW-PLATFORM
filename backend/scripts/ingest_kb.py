@@ -36,7 +36,13 @@ def main() -> int:
         print("Knowledge base ingestion failed.")
         return 1
 
-    text = source.read_text(encoding="utf-8", errors="ignore")
+    if source.suffix == ".pdf":
+        text = "PDF document"
+    else:
+        text = source.read_text(
+            encoding="utf-8",
+            errors="ignore"
+        )
     print(f"Ingesting document for role: {args.role}")
     print(f"File: {source}")
     print(f"Lines: {len(text.splitlines())}")

@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     debug: bool = True
     database_url: str = "sqlite:///./interview_platform.db"
     chroma_persist_dir: str = "./chroma_db"
-    openai_api_key: str = ""
+    JINA_API_KEY: str = ""
     cors_origins: str = Field(default="http://localhost:5173")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

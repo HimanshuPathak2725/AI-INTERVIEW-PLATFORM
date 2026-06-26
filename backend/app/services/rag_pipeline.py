@@ -1,5 +1,8 @@
 from __future__ import annotations
-
+import faiss
+import numpy as np
+from pydoc import text
+import requests
 import hashlib
 import json
 import math
@@ -9,10 +12,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from sqlalchemy import text
 from app.core.config import settings
 
 TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+#.]{1,}")
-VECTOR_SIZE = 384
 
 
 def _tokens(text: str) -> list[str]:
@@ -36,12 +39,57 @@ class RAGPipeline:
     """RAG pipeline that ingests PDF knowledge-base books and generates
     LLM-grounded interview questions via the Anthropic API."""
 
-    def __init__(self) -> None:
+    def __init__(self):
         self.backend_root = Path(__file__).resolve().parents[2]
         self.kb_root = self.backend_root / "knowledge_base"
         self.index_path = self.backend_root / "vector_store" / "kb_index.json"
-        self._chunks: list[dict] = []
+
+        self._chunks = []
+
+        self.faiss_path = self.backend_root / "vector_store" / "kb.index"
+        self.index = None
+
+        self.jina_key = getattr(
+        settings,
+        "JINA_API_KEY",
+        ""
+        ) or os.getenv("JINA_API_KEY")
+
+        
+        if self.jina_key:
+            self.headers={
+            "Authorization": f"Bearer {self.jina_key}",
+            "Content-Type": "application/json"
+        }
+        else:
+            self.headers = None
+            print("[RAG] JINA_API_KEY missing.")
+
         self._load_index()
+
+    # ── FAISS index building ─────────────────────────────────────────────────────
+
+    def _build_faiss(self):
+        if not self._chunks:
+            return
+
+        dim = len(self._chunks[0]["embedding"])
+
+        vectors = np.array(
+            [chunk["embedding"] for chunk in self._chunks],
+            dtype=np.float32
+        )
+
+        self.index = faiss.IndexFlatIP(dim)
+
+        faiss.normalize_L2(vectors)
+
+        self.index.add(vectors)
+
+        faiss.write_index(
+            self.index,
+            str(self.faiss_path)
+        )
 
     # ── Role normalisation ────────────────────────────────────────────────────
 
@@ -53,19 +101,26 @@ class RAGPipeline:
             return "frontend_engineer"
         return "backend_engineer"
 
-    # ── Lightweight hash embedding (no external deps) ────────────────────────
-
+    # ── Jina embedding (no external deps) ────────────────────────
     def _embed(self, text: str) -> list[float]:
-        vector = [0.0] * VECTOR_SIZE
-        counts = Counter(_tokens(text))
-        if not counts:
-            return vector
-        for token, count in counts.items():
-            digest = hashlib.sha256(token.encode()).digest()
-            index = int.from_bytes(digest[:2], "big") % VECTOR_SIZE
-            sign = 1 if digest[2] % 2 == 0 else -1
-            vector[index] += sign * (1 + math.log(count))
-        return vector
+        if not self.headers:
+            return [0.0] * 1024
+
+        response = requests.post(
+            "https://api.jina.ai/v1/embeddings",
+            headers=self.headers,
+            json={
+                "model": "jina-embeddings-v5-text-small",
+                "input": [text]
+            },
+            timeout=70,
+        )
+
+        response.raise_for_status()
+
+        embedding = response.json()["data"][0]["embedding"]
+
+        return embedding
 
     # ── Text extraction (PDF + TXT) ───────────────────────────────────────────
 
@@ -113,10 +168,17 @@ class RAGPipeline:
     # ── Index persistence ─────────────────────────────────────────────────────
 
     def _load_index(self) -> None:
-        if self.index_path.exists():
-            self._chunks = json.loads(self.index_path.read_text(encoding="utf-8"))
-            # Auto-ingest any PDFs not yet in the index
+        if self.faiss_path.exists() and self.index_path.exists():
+            self._chunks = json.loads(
+                self.index_path.read_text(encoding="utf-8")
+            )
+
+            self.index = faiss.read_index(
+                str(self.faiss_path)
+            )
+
             self._auto_ingest_pdfs()
+
             return
 
         self._chunks = []
@@ -140,6 +202,7 @@ class RAGPipeline:
             added += 1
         if added and persist:
             self._persist()
+            self._build_faiss()
 
     def _detect_role_from_filename(self, filename: str) -> str:
         lower = filename.lower()
@@ -189,8 +252,17 @@ class RAGPipeline:
 
     def _persist(self) -> None:
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        self.index_path.write_text(json.dumps(self._chunks, indent=2), encoding="utf-8")
-        print(f"[RAG] Index saved: {len(self._chunks)} chunks")
+
+        self.index_path.write_text(
+            json.dumps(self._chunks),
+            encoding="utf-8"
+        )
+
+        self._build_faiss()
+
+        print(
+            f"[RAG] Index saved: {len(self._chunks)} chunks"
+        )
 
     # ── Query construction ────────────────────────────────────────────────────
 
@@ -223,33 +295,57 @@ class RAGPipeline:
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
 
-    def retrieve_context(self, query: str, role: str, top_k: int = 5) -> List[Dict]:
-        if not self._chunks:
-            self._load_index()
+    def retrieve_context(
+        self,
+        query: str,
+        role: str,
+        top_k: int = 5
+    ) -> List[Dict]:
 
-        query_vector = self._embed(query)
+        if self.index is None:
+            self._build_faiss()
+
+        query_embedding = np.array(
+            [self._embed(query)],
+            dtype=np.float32
+        )
+
+        faiss.normalize_L2(query_embedding)
+
+        scores, indices = self.index.search(
+            query_embedding,
+            top_k * 5
+        )
+
         role_key = self._role_key(role)
-        scored = []
-        for chunk in self._chunks:
+
+        results = []
+
+        for score, idx in zip(scores[0], indices[0]):
+
+            if idx == -1:
+                continue
+
+            chunk = self._chunks[idx]
+
             if chunk["role"] != role_key:
                 continue
-            score = _cosine(query_vector, chunk["embedding"])
-            scored.append((score, chunk))
 
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [
-            {
+            results.append({
                 "content": chunk["content"],
                 "metadata": {
                     "role": chunk["role"],
                     "source": chunk["source"],
                     "chunk_index": chunk["chunk_index"],
-                    **chunk.get("metadata", {}),
+                    **chunk.get("metadata", {})
                 },
-                "score": round(score, 4),
-            }
-            for score, chunk in scored[:top_k]
-        ]
+                "score": float(score)
+            })
+
+            if len(results) >= top_k:
+                break
+
+        return results
 
     # ── LLM-based question generation ─────────────────────────────────────────
 
@@ -262,10 +358,10 @@ class RAGPipeline:
     ) -> List[Dict]:
         """Generate interview questions grounded in the retrieved KB context.
 
-        Uses the Anthropic API (ANTHROPIC_API_KEY env var) when available.
+        Uses the GROQ API (GROQ_API_KEY env var) when available.
         Falls back to improved templates if the key is not set.
         """
-        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        api_key = os.getenv("GROQ_API_KEY", "")
         if api_key:
             return self._generate_with_llm(context, resume_info, role, num_questions, api_key)
         return self._generate_template_questions(context, resume_info, role, num_questions)
@@ -278,11 +374,11 @@ class RAGPipeline:
         num_questions: int,
         api_key: str,
     ) -> List[Dict]:
-        """Call Claude to produce context-grounded questions."""
+        """Call GROQ to produce context-grounded questions."""
         try:
-            import anthropic
+            from groq import Groq
         except ImportError:
-            print("[RAG] anthropic package not installed, using template fallback")
+            print("[RAG] groq package not installed, using template fallback")
             return self._generate_template_questions(context, resume_info, role, num_questions)
 
         kb_text = "\n\n---\n\n".join(
@@ -323,13 +419,17 @@ Return ONLY valid JSON — a list of {num_questions} objects, no prose, no markd
   }}
 ]"""
 
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
+        client = Groq(api_key=api_key)
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            temperature=0.7,
             max_tokens=1200,
+            response_format={
+                "type": "json_object",
+            },
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = response.content[0].text.strip()
+        raw = response.choices[0].message.content
         # Strip markdown fences if present
         raw = re.sub(r"```json\s*", "", raw)
         raw = re.sub(r"```\s*", "", raw)

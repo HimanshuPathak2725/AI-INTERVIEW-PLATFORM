@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     debug: bool = True
     database_url: str = "sqlite:///./interview_platform.db"
     chroma_persist_dir: str = "./chroma_db"
+    GROQ_API_KEY: str = ""
     JINA_API_KEY: str = ""
     cors_origins: str = Field(default="http://localhost:5173")
 
@@ -18,4 +19,4 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
-settings = Settings()
+# settings = Settings()

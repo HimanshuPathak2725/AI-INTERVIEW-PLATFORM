@@ -117,9 +117,35 @@ class ResumeParser:
         education = [edu for edu, pat in EDU_PATTERNS.items() if pat.search(text)]
         return sorted(set(education))
     
+    def extract_text_from_docx(self, file_bytes: bytes) -> str:
+        try:
+            import docx
+            doc = docx.Document(io.BytesIO(file_bytes))
+            return "\n".join([para.text for para in doc.paragraphs])
+        except ImportError:
+            raise ValueError("python-docx is not installed.")
+        except Exception as e:
+            raise ValueError(f"Failed to parse DOCX: {str(e)}")
+
+    def extract_text_from_image(self, file_bytes: bytes) -> str:
+        try:
+            import pytesseract
+            from PIL import Image
+            image = Image.open(io.BytesIO(file_bytes))
+            return pytesseract.image_to_string(image)
+        except ImportError:
+            raise ValueError("pytesseract or Pillow is not installed.")
+        except Exception as e:
+            raise ValueError(f"Failed to parse Image: {str(e)}")
+            
     def parse(self, file_bytes: bytes, filename: str) -> Tuple[str, ResumeInfo]:
-        if filename.lower().endswith('.pdf'):
+        filename_lower = filename.lower()
+        if filename_lower.endswith('.pdf'):
             text = self.extract_text_from_pdf(file_bytes)
+        elif filename_lower.endswith('.docx'):
+            text = self.extract_text_from_docx(file_bytes)
+        elif filename_lower.endswith(('.png', '.jpg', '.jpeg')):
+            text = self.extract_text_from_image(file_bytes)
         else:
             text = file_bytes.decode('utf-8', errors='ignore')
         return self.parse_text(text)

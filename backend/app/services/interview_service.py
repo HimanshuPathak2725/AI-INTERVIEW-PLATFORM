@@ -19,10 +19,14 @@ class InterviewService:
             extracted_skills=session_data.resume_info.model_dump() if session_data.resume_info else {},
             status="active"
         )
-        db.add(session)
-        db.commit()
-        db.refresh(session)
-        
+        try:
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+        except Exception as e:
+            db.rollback()
+            raise ValueError(f"Failed to create session: {str(e)}")
+            
         self.active_sessions[session.id] = {
             "questions_asked": 0,
             "topics_covered": [],
@@ -39,10 +43,12 @@ class InterviewService:
         resume_info = session.extracted_skills or {}
         role = session.role
         
+        history = self.active_sessions.get(session_id, {}).get("conversation_history", [])
+        
         query = rag_pipeline.construct_query(
             resume_info=resume_info,
             role=role,
-            conversation_history=self.active_sessions.get(session_id, {}).get("conversation_history", [])
+            conversation_history=history
         )
         
         contexts = rag_pipeline.retrieve_context(query, role, top_k=5)
@@ -50,7 +56,8 @@ class InterviewService:
             context=contexts,
             resume_info=resume_info,
             role=role,
-            num_questions=num_questions
+            num_questions=num_questions,
+            conversation_history=history
         )
         
         questions = []
@@ -68,9 +75,13 @@ class InterviewService:
             db.add(question)
             questions.append(question)
         
-        db.commit()
-        for q in questions:
-            db.refresh(q)
+        try:
+            db.commit()
+            for q in questions:
+                db.refresh(q)
+        except Exception as e:
+            db.rollback()
+            raise ValueError(f"Failed to save generated questions: {str(e)}")
         
         if session_id in self.active_sessions:
             for q in generated:
@@ -103,9 +114,13 @@ class InterviewService:
             score=evaluation.get("score"),
             feedback=evaluation.get("feedback")
         )
-        db.add(answer)
-        db.commit()
-        db.refresh(answer)
+        try:
+            db.add(answer)
+            db.commit()
+            db.refresh(answer)
+        except Exception as e:
+            db.rollback()
+            raise ValueError(f"Failed to submit answer: {str(e)}")
         
         return answer
     
@@ -122,7 +137,11 @@ class InterviewService:
         
         session.status = "completed"
         session.completed_at = datetime.utcnow()
-        db.commit()
+        try:
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            raise ValueError(f"Failed to complete session: {str(e)}")
         
         questions = self.get_session_questions(db, session_id)
         total = len(questions)

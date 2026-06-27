@@ -9,7 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.rag_pipeline import rag_pipeline
+from app.services.rag_pipeline import get_rag_pipeline
+
 
 
 def main() -> int:
@@ -31,6 +32,7 @@ def main() -> int:
                 key, value = item.split(":", 1)
                 metadata[key.strip()] = value.strip()
 
+    rag_pipeline = get_rag_pipeline()
     success = rag_pipeline.ingest_document(str(source), role=args.role, metadata=metadata)
     if not success:
         print("Knowledge base ingestion failed.")

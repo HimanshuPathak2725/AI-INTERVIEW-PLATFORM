@@ -27,6 +27,7 @@ import time
 from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Counter as TCounter
+from app.core.config import Settings
 
 import faiss
 import numpy as np
@@ -123,8 +124,8 @@ class RAGPipeline:
         self._role_chunk_map:  dict[str, list[int]]   = {}
 
         self.embedding_dim: int | None = None
-
-        self._jina_key: str = self._load_secret("JINA_API_KEY")
+        settings = Settings()
+        self._jina_key: str = settings.JINA_API_KEY
         if not self._jina_key:
             log.warning("[RAG] JINA_API_KEY missing – embeddings will be zero vectors.")
 
@@ -164,9 +165,9 @@ class RAGPipeline:
             )
         return [0.0] * self.embedding_dim
 
-    def _embed(self, text: str, retries: int = 3) -> list[float]:
+    def _embed_batch(self, text: list[str], retries: int = 3) -> list[list[float]]:
         if not self._jina_key:
-            return self._fallback_vector()
+            return [self._fallback_vector() for _ in text]
 
         import requests
 
@@ -174,35 +175,45 @@ class RAGPipeline:
             "Authorization": f"Bearer {self._jina_key}",
             "Content-Type":  "application/json",
         }
-        payload = {"model": _JINA_MODEL, "input": [text]}
-
-        for attempt in range(retries):
-            try:
-                resp = requests.post(_JINA_URL, headers=headers, json=payload, timeout=70)
-                resp.raise_for_status()
-                vector: list[float] = resp.json()["data"][0]["embedding"]
-
-                if self.embedding_dim is None:
-                    self.embedding_dim = len(vector)
-                elif len(vector) != self.embedding_dim:
-                    raise ValueError(
-                        f"Embedding dimension mismatch: "
-                        f"expected {self.embedding_dim}, got {len(vector)}. "
-                        "Rebuild the index if the model changed."
-                    )
-                return vector
-
-            except ValueError:
-                raise
-            except Exception as exc:
-                wait = 2 ** attempt
-                log.warning("[RAG] Embed attempt %d/%d failed: %s – retrying in %ds",
-                            attempt + 1, retries, exc, wait)
-                if attempt < retries - 1:
-                    time.sleep(wait)
-
-        log.error("[RAG] All embed attempts failed; returning zero vector.")
-        return self._fallback_vector()
+        
+        # Split into smaller batches if necessary to avoid API limits
+        all_vectors = []
+        batch_size = 100
+        
+        for i in range(0, len(text), batch_size):
+            batch_texts = text[i:i+batch_size]
+            payload = {"model": _JINA_MODEL, "input": batch_texts}
+    
+            for attempt in range(retries):
+                try:
+                    resp = requests.post(_JINA_URL, headers=headers, json=payload, timeout=70)
+                    resp.raise_for_status()
+                    vectors = [item["embedding"] for item in resp.json()["data"]]
+    
+                    if self.embedding_dim is None and vectors:
+                        self.embedding_dim = len(vectors[0])
+                    elif vectors and len(vectors[0]) != self.embedding_dim:
+                        raise ValueError(
+                            f"Embedding dimension mismatch: "
+                            f"expected {self.embedding_dim}, got {len(vectors[0])}. "
+                            "Rebuild the index if the model changed."
+                        )
+                    all_vectors.extend(vectors)
+                    break # Success, break retry loop
+    
+                except ValueError:
+                    raise
+                except Exception as exc:
+                    wait = 2 ** attempt
+                    log.warning("[RAG] Embed attempt %d/%d failed: %s – retrying in %ds",
+                                attempt + 1, retries, exc, wait)
+                    if attempt < retries - 1:
+                        time.sleep(wait)
+            else:
+                log.error("[RAG] All embed attempts failed for a batch; returning zero vectors.")
+                all_vectors.extend([self._fallback_vector() for _ in batch_texts])
+                
+        return all_vectors
 
     # ── File I/O ──────────────────────────────────────────────────────────────
 
@@ -234,7 +245,7 @@ class RAGPipeline:
                 parts.append(page_text)
         return "\n".join(parts)
 
-    def _chunk_text(self, text: str, max_words: int = 200, overlap: int = 40) -> list[str]:
+    def _chunk_text(self, text: str, max_words: int = 500, overlap: int = 50) -> list[str]:
         words = text.split()
         if not words:
             return []
@@ -465,20 +476,30 @@ class RAGPipeline:
         new_chunks:  list[dict]        = []
         new_vectors: list[list[float]] = []
 
-        for idx, chunk_text in enumerate(self._chunk_text(raw_text)):
+        chunks = self._chunk_text(raw_text)
+        
+        chunks_to_embed = []
+        chunk_indices = []
+        
+        for idx, chunk_text in enumerate(chunks):
+            chunk_id = hashlib.sha256(
+                f"{role_key}:{path.name}:{idx}:{chunk_text}".encode()
+            ).hexdigest()
+            if chunk_id not in existing_ids:
+                chunks_to_embed.append(chunk_text)
+                chunk_indices.append(idx)
+                
+        if not chunks_to_embed:
+            return True
+
+        embeddings = self._embed_batch(chunks_to_embed)
+        
+        for i, (chunk_text, emb) in enumerate(zip(chunks_to_embed, embeddings)):
+            idx = chunk_indices[i]
             chunk_id = hashlib.sha256(
                 f"{role_key}:{path.name}:{idx}:{chunk_text}".encode()
             ).hexdigest()
             
-            if chunk_id in existing_ids:
-                continue
-            
-            try:
-                emb = self._embed(chunk_text)
-            except ValueError as exc:
-                log.error("[RAG] Aborting ingest of %s: %s", path.name, exc)
-                return False
-                
             new_chunks.append({
                 "id":          chunk_id,
                 "role":        role_key,
@@ -623,11 +644,12 @@ class RAGPipeline:
         resume_info:   Dict,
         role:          str,
         num_questions: int = 3,
+        conversation_history: Optional[List] = None,
     ) -> List[Dict]:
         api_key = self._load_secret("GROQ_API_KEY")
         if api_key:
-            return self._generate_with_llm(context, resume_info, role, num_questions, api_key)
-        return self._generate_template_questions(context, resume_info, role, num_questions)
+            return self._generate_with_llm(context, resume_info, role, num_questions, api_key, conversation_history)
+        return self._generate_template_questions(context, resume_info, role, num_questions, conversation_history)
 
     def _generate_with_llm(
         self,
@@ -636,38 +658,50 @@ class RAGPipeline:
         role:          str,
         num_questions: int,
         api_key:       str,
+        conversation_history: Optional[List] = None,
     ) -> List[Dict]:
         try:
             from groq import Groq  # type: ignore
         except ImportError:
             log.warning("[RAG] groq package not installed – template fallback.")
-            return self._generate_template_questions(context, resume_info, role, num_questions)
+            return self._generate_template_questions(context, resume_info, role, num_questions, conversation_history)
 
         kb_text    = "\n\n---\n\n".join(
             f"[Source: {c['metadata']['source']}]\n{c['content']}" for c in context[:4]
         )
         skills_str = ", ".join(resume_info.get("skills", [])[:8]) or "not specified"
+        tech_str   = ", ".join(resume_info.get("technologies", [])[:8]) or "not specified"
         exp        = resume_info.get("experience_years") or 0
         seniority  = "senior" if exp >= 5 else "mid-level" if exp >= 2 else "junior"
+        
+        history_text = "No previous questions asked."
+        if conversation_history:
+            recent = [f"- Topic: {h.get('topic')}, Difficulty: {h.get('difficulty')}" for h in conversation_history[-3:]]
+            history_text = "\n".join(recent)
 
         prompt = f"""You are a technical interviewer for a {role} position.
 
 CANDIDATE PROFILE
-Seniority : {seniority}
+Seniority : {seniority} ({exp} years experience)
 Skills    : {skills_str}
+Tech Stack: {tech_str}
 
-RETRIEVED KNOWLEDGE BASE CONTEXT (from ML/AI textbooks)
+PREVIOUSLY COVERED TOPICS (Do NOT repeat these):
+{history_text}
+
+RETRIEVED KNOWLEDGE BASE CONTEXT:
 {kb_text}
 
 TASK
 Generate exactly {num_questions} technical interview questions.
 
 Rules:
-- Every question MUST be grounded in the knowledge base context above.
-- Reference concepts, terminology, or examples found in that context.
-- Questions should match the candidate seniority ({seniority}).
-- Cover different topics across the questions.
-- Do NOT use generic filler questions.
+- Adapt difficulty based on the candidate's seniority ({seniority}) and previous performance.
+- Include a mix of behavioral, system design, and deep technical questions.
+- Ground at least one question explicitly in the knowledge base context.
+- Ground the questions in the candidate's specific Tech Stack and Skills where possible.
+- DO NOT repeat topics from the 'PREVIOUSLY COVERED TOPICS' section.
+- Avoid generic textbook questions; focus on trade-offs, architecture, and real-world scenarios.
 
 Return ONLY valid JSON with this exact shape:
 {{
@@ -710,7 +744,7 @@ Return ONLY valid JSON with this exact shape:
         except Exception as exc:
             log.warning("[RAG] LLM generation failed (%s) – template fallback.", exc)
 
-        return self._generate_template_questions(context, resume_info, role, num_questions)
+        return self._generate_template_questions(context, resume_info, role, num_questions, conversation_history)
 
     def _generate_template_questions(
         self,
@@ -718,6 +752,7 @@ Return ONLY valid JSON with this exact shape:
         resume_info:   Dict,
         role:          str,
         num_questions: int,
+        conversation_history: Optional[List] = None,
     ) -> List[Dict]:
         focus         = self._candidate_focus(resume_info)
         context_terms = self._context_terms(context)

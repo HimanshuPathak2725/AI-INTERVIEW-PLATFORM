@@ -38,3 +38,14 @@ Thumbs.db
 # Local meeting history cache
 .history/
 
+
+# Local SQLite Databases and Runtime states
+interview_platform.db
+*.db
+*.db-journal
+*.db-wal
+
+# Local RAG Vector and Document Stores
+knowledge_base/
+*.faiss
+*.pkl

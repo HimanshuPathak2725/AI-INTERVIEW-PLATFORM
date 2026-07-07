@@ -1,23 +1,21 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.app.core.config import settings
-from backend.app.api.v1.interview import router as interview_router
+from backend.app.api.v1 import interview
 
-app = FastAPI(
-    title=settings.PROJECT_NAME,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json"
-)
+app = FastAPI(title="AI Interview Platform API")
 
+# Global CORS setup ensuring every incoming route header passes through
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False, # Wildcard origins (*) ke sath allow_credentials False hona chahiye warna browser headers block kar deta hai
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(interview_router, prefix=settings.API_V1_STR, tags=["interview"])
+# Core routing mounts
+app.include_router(interview.router, prefix="/api/v1", tags=["Session"])
 
 @app.get("/")
-def root_check():
-    return {"status": "healthy", "service": settings.PROJECT_NAME}
+def read_root():
+    return {"status": "healthy", "engine": "LangGraph Active"}

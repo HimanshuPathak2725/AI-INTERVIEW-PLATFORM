@@ -8,16 +8,14 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# Configure CORS for local development and microservice testing
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_routes=["*"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include the newly mapped LangGraph interaction routes
 app.include_router(interview_router, prefix=settings.API_V1_STR, tags=["interview"])
 
 @app.get("/")

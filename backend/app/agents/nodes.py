@@ -13,22 +13,18 @@ async def retrieval_node(state: InterviewState) -> Dict[str, Any]:
     context based on the interview topic context.
     """
     last_message = state["messages"][-1].content if state["messages"] else ""
-    
-    # Placeholder: Yeh hum single point connect karenge hamare dynamic RAG pipeline service se
     mock_retrieved_context = f"Vetted evaluation criteria and standards related to context: '{last_message[:30]}...'"
-    
     return {"retrieved_context": mock_retrieved_context}
 
 async def evaluation_node(state: InterviewState) -> Dict[str, Any]:
     """
     Analyzes the last user response against the RAG context and scores technical accuracy.
     """
-    # Simply incrementing question count for state simulation logic 
     current_count = state.get("question_count", 0) + 1
+    updated_scores = state.get("evaluation_scores", {}).copy() if state.get("evaluation_scores") else {"technical_accuracy": 0.0}
     
-    # Analytical updates to pass to state reducer
-    updated_scores = state.get("evaluation_scores", {"technical_accuracy": 0.0}).copy()
-    updated_scores["technical_accuracy"] = min(updated_scores.get("technical_accuracy", 0.0") + 0.1, 1.0)
+    current_accuracy = updated_scores.get("technical_accuracy", 0.0)
+    updated_scores["technical_accuracy"] = min(current_accuracy + 0.1, 1.0)
     
     return {
         "question_count": current_count,
@@ -48,7 +44,6 @@ async def interviewer_node(state: InterviewState) -> Dict[str, Any]:
         "Generate the next concise, clear response or a structured follow-up question."
     )
     
-    # Structural invocation using message state histories
     messages_payload = [{"role": "system", "content": system_prompt}] + state["messages"]
     response = await llm.ainvoke(messages_payload)
     

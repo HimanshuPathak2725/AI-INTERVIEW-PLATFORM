@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     
     # LLM & Vector DB Keys
     OPENAI_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
     JINA_API_KEY: str = ""
     QDRANT_URL: str = ""
     QDRANT_API_KEY: str = ""

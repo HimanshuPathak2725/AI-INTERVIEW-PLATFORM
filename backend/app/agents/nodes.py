@@ -6,8 +6,8 @@ from backend.app.core.config import settings
 
 # Updated to the latest stable model from the Gemini 3.5 family
 llm = ChatGoogleGenerativeAI(
-    google_api_key=settings.OPENAI_API_KEY, 
-    model="gemini-3.5-flash",
+    google_api_key=getattr(settings, "GEMINI_API_KEY", getattr(settings, "OPENAI_API_KEY", "")), 
+    model="gemini-3.1-flash-lite",
     temperature=0.7
 )
 

@@ -1,103 +1,98 @@
-import { useMemo, useState } from "react";
+import React, { useState } from 'react';
+import { sendInterviewResponse } from '../services/interviewApi'; // Updated to use correct stable service
 
-import QuestionCard from "./QuestionCard";
+export default function InterviewSession() {
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: "Great. Let’s dive in. We’ll start with a foundational concept to set the stage." }
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState('warmup');
+  const [score, setScore] = useState(0.1);
 
-async function submitAnswer(sessionId, questionId, answerText) {
-  const response = await fetch("/api/v1/answers", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      session_id: sessionId,
-      question_id: questionId,
-      answer_text: answerText,
-    }),
-  });
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (!input.trim() || loading) return;
 
-  if (!response.ok) {
-    throw new Error(`Failed to submit answer: ${response.status}`);
-  }
+    const currentInput = input;
+    setInput('');
 
-  return response.json();
-}
-
-async function completeSession(sessionId) {
-  const response = await fetch(`/api/v1/sessions/${sessionId}/complete`, {
-    method: "POST",
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to complete session: ${response.status}`);
-  }
-
-  return response.json();
-}
-
-export default function InterviewSession({ session, onComplete }) {
-  const questions = useMemo(() => session.questions ?? [], [session.questions]);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [answer, setAnswer] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  const currentQuestion = questions[currentIndex];
-
-  const handleSubmit = async () => {
-    if (!currentQuestion || !answer.trim()) {
-      setError("Please write an answer before submitting.");
-      return;
-    }
-
-    setBusy(true);
-    setError("");
+    const freshMessages = [...messages, { role: 'user', content: currentInput }];
+    setMessages(freshMessages);
+    setLoading(true);
 
     try {
-      await submitAnswer(session.id, currentQuestion.id, answer.trim());
-      setAnswer("");
-
-      if (currentIndex + 1 < questions.length) {
-        setCurrentIndex((value) => value + 1);
-        return;
+      const result = await sendInterviewResponse(currentInput, freshMessages, phase);
+      
+      setPhase(result.nextPhase || result.current_phase || phase);
+      if (result.evaluation?.technical_accuracy !== undefined) {
+        setScore(result.evaluation.technical_accuracy);
       }
-
-      const summary = await completeSession(session.id);
-      onComplete(summary);
+      
+      setMessages(prev => [...prev, { role: 'assistant', content: result.aiMessage || result.response }]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Connection timed out or backend offline.' }]);
     } finally {
-      setBusy(false);
+      loading && setLoading(false);
     }
   };
 
-  if (!currentQuestion) {
-    return (
-      <section className="panel">
-        <h2>No questions available yet.</h2>
-        <p className="muted">The backend returned an empty question set for this session.</p>
-      </section>
-    );
-  }
+  // Helper helper to render content safely without object injection crashes
+  const renderMessageContent = (content) => {
+    if (!content) return "";
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content.map((c, i) => (typeof c === 'object' ? c.text || JSON.stringify(c) : c)).join("\n");
+    }
+    if (typeof content === 'object') {
+      return content.text || content.content || JSON.stringify(content);
+    }
+    return String(content);
+  };
 
   return (
-    <div className="grid">
-      <section className="panel">
-        <div className="meta">
-          <span className="pill">{session.role}</span>
-          <span className="pill">{session.candidate_name || "Anonymous candidate"}</span>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '75vh', border: '1px solid #e0e0e0', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#fff' }}>
+      <div style={{ padding: '16px', background: '#f8f9fa', borderBottom: '1px solid #e0e0e0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h4 style={{ margin: 0 }}>Active Session Console</h4>
+          <small style={{ color: '#6c757d' }}>Phase: <strong>{phase}</strong></small>
         </div>
-        <p className="muted">Answer the generated interview questions one by one.</p>
-      </section>
+        <div style={{ background: '#e2f0d9', color: '#385723', padding: '6px 12px', borderRadius: '20px', fontWeight: 'bold', fontSize: '0.9rem' }}>
+          Accuracy Score: {(score * 100).toFixed(0)}%
+        </div>
+      </div>
 
-      <QuestionCard
-        question={currentQuestion}
-        answer={answer}
-        onAnswerChange={setAnswer}
-        onSubmit={handleSubmit}
-        disabled={busy}
-        index={currentIndex}
-        total={questions.length}
-      />
+      <div style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {messages.map((msg, idx) => (
+          <div key={idx} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
+            <div style={{
+              maxWidth: '70%',
+              padding: '12px 16px',
+              borderRadius: '12px',
+              backgroundColor: msg.role === 'user' ? '#007bff' : '#f1f3f5',
+              color: msg.role === 'user' ? '#fff' : '#212529',
+              whiteSpace: 'pre-line'
+            }}>
+              {renderMessageContent(msg.content)}
+            </div>
+          </div>
+        ))}
+        {loading && <div style={{ color: '#6c757d', fontStyle: 'italic', fontSize: '0.85rem' }}>Interviewer is evaluating your response...</div>}
+      </div>
 
-      {error ? <p className="panel muted">{error}</p> : null}
+      <form onSubmit={handleSend} style={{ display: 'flex', padding: '16px', borderTop: '1px solid #e0e0e0', background: '#f8f9fa', gap: '10px' }}>
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Formulate your technical answer..."
+          disabled={loading}
+          style={{ flex: 1, padding: '12px 16px', borderRadius: '6px', border: '1px solid #ced4da', outline: 'none' }}
+        />
+        <button type="submit" disabled={loading} style={{ padding: '12px 24px', backgroundColor: '#007bff', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+          Submit
+        </button>
+      </form>
     </div>
   );
 }

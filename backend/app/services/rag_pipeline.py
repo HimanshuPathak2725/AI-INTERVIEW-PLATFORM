@@ -1,7 +1,7 @@
 """
 RAG pipeline – ingests PDF/TXT knowledge-base files and generates
 LLM-grounded interview questions via the GROQ API.
-Optimized for non-blocking Async parsing and strict sandbox storage containment.
+Optimized with asynchronous task handoffs and thread-safe data access layers.
 """
 
 from __future__ import annotations
@@ -13,14 +13,16 @@ import os
 import re
 import asyncio
 import aiofiles
-import time
-from collections import Counter
+import numpy as np
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Counter as TCounter
+from typing import Dict, List, Optional
 from app.core.config import Settings
 
-import faiss
-import numpy as np
+# Conditional FAISS import to prevent crash if running outside sandbox
+try:
+    import faiss
+except ImportError:
+    faiss = None
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +39,6 @@ def _concept_tokens(text: str) -> set[str]:
 
 _JINA_MODEL = "jina-embeddings-v3"
 _JINA_URL   = "https://api.jina.ai/v1/embeddings"
-_GROQ_MODEL = "llama-3.3-70b-versatile"
 
 _ROLE_PATTERNS: dict[str, list[str]] = {
     "ai_ml_engineer": [
@@ -90,11 +91,11 @@ class RAGPipeline:
 
         self.embedding_dim: int | None = None
         settings = Settings()
-        self._jina_key: str = settings.JINA_API_KEY
+        self._jina_key: str = getattr(settings, "JINA_API_KEY", "")
         if not self._jina_key:
-            log.warning("[RAG] JINA_API_KEY missing – embeddings will be zero vectors.")
+            log.warning("[RAG] JINA_API_KEY missing – embeddings will use fallbacks.")
 
-        # Non-blocking state loading
+        # Trigger background initialization to prevent blocking constructor
         asyncio.create_task(self._load_index_async())
 
     def _role_index_path(self, role_key: str) -> Path:
@@ -143,7 +144,7 @@ class RAGPipeline:
                         break
                     except Exception as exc:
                         wait = 2 ** attempt
-                        log.warning("[RAG] Async embed failed, retrying in %ds: %s", wait, exc)
+                        log.warning("[RAG] Embedding failed, retrying in %ds: %s", wait, exc)
                         if attempt < retries - 1:
                             await asyncio.sleep(wait)
                 else:
@@ -153,7 +154,6 @@ class RAGPipeline:
 
     async def _read_file_async(self, path: Path) -> str:
         if path.suffix.lower() == ".pdf":
-            # Running heavy sync PDF reading inside a worker thread to keep the loop unblocked
             return await asyncio.to_thread(self._read_pdf_sync, path)
         async with aiofiles.open(path, mode='r', encoding='utf-8', errors='ignore') as f:
             return await f.read()
@@ -162,10 +162,15 @@ class RAGPipeline:
         try:
             from PyPDF2 import PdfReader
         except ImportError:
+            log.error("[RAG] PyPDF2 dependency missing.")
             return ""
-        reader = PdfReader(str(path))
-        parts = [page.extract_text() or "" for page in reader.pages]
-        return "\n".join(parts)
+        try:
+            reader = PdfReader(str(path))
+            parts = [page.extract_text() or "" for page in reader.pages]
+            return "\n".join(parts)
+        except Exception as e:
+            log.error("[RAG] Failed reading PDF %s: %s", path.name, e)
+            return ""
 
     def _chunk_text(self, text: str, max_words: int = 400, overlap: int = 40) -> list[str]:
         words = text.split()
@@ -181,7 +186,7 @@ class RAGPipeline:
         return role_map
 
     async def _build_faiss_async(self) -> None:
-        if self._embeddings is None or len(self._embeddings) == 0:
+        if faiss is None or self._embeddings is None or len(self._embeddings) == 0:
             return
 
         role_map = self._rebuild_role_chunk_map()
@@ -190,83 +195,101 @@ class RAGPipeline:
 
         def _build_sync():
             for role_key, global_indices in role_map.items():
-                vectors = self._embeddings[global_indices].astype(np.float32).copy()
-                norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-                vectors = np.divide(vectors, norms, out=vectors, where=norms > 0)
-                
-                dim = vectors.shape[1]
-                role_idx = faiss.IndexFlatIP(dim)
-                role_idx.add(vectors)
-                new_indexes[role_key] = role_idx
-                faiss.write_index(role_idx, str(self._role_index_path(role_key)))
+                try:
+                    vectors = self._embeddings[global_indices].astype(np.float32).copy()
+                    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+                    vectors = np.divide(vectors, norms, out=vectors, where=norms > 0)
+                    
+                    dim = vectors.shape[1]
+                    role_idx = faiss.IndexFlatIP(dim)
+                    role_idx.add(vectors)
+                    new_indexes[role_key] = role_idx
+                    faiss.write_index(role_idx, str(self._role_index_path(role_key)))
+                except Exception as e:
+                    log.error("[RAG] Error building index for %s: %s", role_key, e)
 
         await asyncio.to_thread(_build_sync)
-        self._role_indexes = new_indexes
-        self._role_chunk_map = role_map
+        async with self._lock:
+            self._role_indexes = new_indexes
+            self._role_chunk_map = role_map
 
     async def _load_index_async(self) -> None:
         async with self._lock:
-            if self.index_path.exists():
-                try:
-                    async with aiofiles.open(self.index_path, mode='r', encoding='utf-8') as f:
-                        self._chunks = json.loads(await f.read())
-                    
-                    if self.embeddings_path.exists():
-                        self._embeddings = np.load(self.embeddings_path, allow_pickle=False)
-                        if len(self._embeddings):
-                            self.embedding_dim = self._embeddings.shape[1]
-                    
-                    role_chunk_map = self._rebuild_role_chunk_map()
+            if not self.index_path.exists():
+                return
+            try:
+                async with aiofiles.open(self.index_path, mode='r', encoding='utf-8') as f:
+                    self._chunks = json.loads(await f.read())
+                
+                if self.embeddings_path.exists():
+                    self._embeddings = np.load(self.embeddings_path, allow_pickle=False)
+                    if len(self._embeddings):
+                        self.embedding_dim = self._embeddings.shape[1]
+                
+                role_chunk_map = self._rebuild_role_chunk_map()
+                if faiss is not None:
                     for role_key in _ROLE_PATTERNS:
                         p = self._role_index_path(role_key)
                         if p.exists():
                             self._role_indexes[role_key] = faiss.read_index(str(p))
                             self._role_chunk_map[role_key] = role_chunk_map.get(role_key, [])
-                    return
-                except Exception as exc:
-                    log.error("[RAG] Load error, resetting indices: %s", exc)
+            except Exception as exc:
+                log.error("[RAG] Index load aborted, resetting indices: %s", exc)
 
     async def ingest_document_async(self, file_path: str, role: str) -> bool:
+        """
+        Schedules document processing into an asynchronous worker task thread 
+        so that the incoming HTTP transmission request thread never experiences block latency.
+        """
         path = Path(file_path)
         if not path.exists():
             return False
-        
-        raw_text = await self._read_file_async(path)
-        role_key = self._role_key(role)
-        chunks = self._chunk_text(raw_text)
-        
-        if not chunks:
-            return False
 
-        embeddings = await self._embed_batch_async(chunks)
-        
-        async with self._lock:
-            new_chunks = []
-            for idx, chunk_text in enumerate(chunks):
-                chunk_id = hashlib.sha256(f"{role_key}:{path.name}:{idx}".encode()).hexdigest()
-                new_chunks.append({
-                    "id":          chunk_id,
-                    "role":        role_key,
-                    "source":      path.name,
-                    "chunk_index": idx,
-                    "content":     chunk_text,
-                })
-            
-            self._chunks.extend(new_chunks)
-            new_np = np.array(embeddings, dtype=np.float32)
-            self._embeddings = new_np if self._embeddings is None else np.vstack([self._embeddings, new_np])
-            
-            # Atomic Disk Persistence
-            self.vector_dir.mkdir(parents=True, exist_ok=True)
-            tmp_index = self.index_path.with_suffix(".tmp.json")
-            async with aiofiles.open(tmp_index, mode='w', encoding='utf-8') as f:
-                await f.write(json.dumps(self._chunks, ensure_ascii=False))
-            tmp_index.replace(self.index_path)
-            
-            np.save(self.embeddings_path, self._embeddings, allow_pickle=False)
-            await self._build_faiss_async()
-            
+        # Instantly hand-off processing loop to an independent asynchronous task lifecycle
+        asyncio.create_task(self._process_ingestion_job(path, role))
         return True
+
+    async def _process_ingestion_job(self, path: Path, role: str) -> None:
+        try:
+            raw_text = await self._read_file_async(path)
+            role_key = self._role_key(role)
+            chunks = self._chunk_text(raw_text)
+            
+            if not chunks:
+                return
+
+            embeddings = await self._embed_batch_async(chunks)
+            
+            async with self._lock:
+                new_chunks = []
+                base_idx = len(self._chunks)
+                for idx, chunk_text in enumerate(chunks):
+                    chunk_id = hashlib.sha256(f"{role_key}:{path.name}:{base_idx + idx}".encode()).hexdigest()
+                    new_chunks.append({
+                        "id":          chunk_id,
+                        "role":        role_key,
+                        "source":      path.name,
+                        "chunk_index": base_idx + idx,
+                        "content":     chunk_text,
+                    })
+                
+                self._chunks.extend(new_chunks)
+                new_np = np.array(embeddings, dtype=np.float32)
+                self._embeddings = new_np if self._embeddings is None else np.vstack([self._embeddings, new_np])
+                
+                # Non-blocking, isolated persistent storage writer threads
+                self.vector_dir.mkdir(parents=True, exist_ok=True)
+                tmp_index = self.index_path.with_suffix(".tmp.json")
+                async with aiofiles.open(tmp_index, mode='w', encoding='utf-8') as f:
+                    await f.write(json.dumps(self._chunks, ensure_ascii=False))
+                tmp_index.replace(self.index_path)
+                
+                await asyncio.to_thread(np.save, self.embeddings_path, self._embeddings, allow_pickle=False)
+            
+            await self._build_faiss_async()
+            log.info("[RAG] Async background processing completed for file: %s", path.name)
+        except Exception as e:
+            log.error("[RAG] Background processing failed for %s: %s", path.name, e)
 
     def evaluate_answer(self, question: str, answer: str, expected_concepts: List[str]) -> Dict:
         if not answer.strip():
@@ -284,7 +307,7 @@ class RAGPipeline:
 
         return {
             "score": score,
-            "feedback": "Strong coverage of tech concepts." if score >= 75 else "Add more architecture details.",
+            "feedback": "Strong technical concept articulation." if score >= 75 else "Elaborate with concrete architectural systems design definitions.",
             "concepts_covered": covered,
             "concepts_missing": missing
         }

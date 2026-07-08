@@ -1,51 +1,32 @@
-__pycache__/
-*.py[cod]
-*.so
-*.egg-info/
-dist/
-build/
-venv/
-.venv/
-env/
-.env
-.env.*
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Logs
-*.log
-
-# Data/Model artifacts
-/data/
-datasets/
-models/
-artifacts/
-outputs/
-
-# Node
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# OS/Editor
+# System / OS
 .DS_Store
 Thumbs.db
+
+# Python & Dependencies
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.python-version
+.pytest_cache/
+*.egg-info/
+
+# Frontend / Node
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# Project Specific Local Assets (Anti-Bloat & Security)
+backend/interview_platform.db
+backend/interview_platform.db-journal
+backend/uploads/
+backend/knowledge_base/
+backend/vector_store/
+
+# Development Logs & IDEs
+*.log
 .vscode/
 .idea/
-
-# Local meeting history cache
-.history/
-
-
-# Local SQLite Databases and Runtime states
-interview_platform.db
-*.db
-*.db-journal
-*.db-wal
-
-# Local RAG Vector and Document Stores
-knowledge_base/
-*.faiss
-*.pkl
+.env

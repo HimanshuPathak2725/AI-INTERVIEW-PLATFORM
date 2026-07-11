@@ -1,15 +1,11 @@
-import { useState } from "react";
+import React, { useState } from "react";
 
 async function createSession(formData) {
   const response = await fetch("/api/v1/sessions", {
     method: "POST",
     body: formData,
   });
-
-  if (!response.ok) {
-    throw new Error(`Failed to create session: ${response.status}`);
-  }
-
+  if (!response.ok) throw new Error(`Failed to create session: ${response.status}`);
   return response.json();
 }
 
@@ -17,11 +13,7 @@ async function generateQuestions(sessionId) {
   const response = await fetch(`/api/v1/sessions/${sessionId}/questions?num_questions=3`, {
     method: "POST",
   });
-
-  if (!response.ok) {
-    throw new Error(`Failed to generate questions: ${response.status}`);
-  }
-
+  if (!response.ok) throw new Error(`Failed to generate questions: ${response.status}`);
   return response.json();
 }
 
@@ -56,25 +48,32 @@ export default function ResumeUpload({ onSessionCreated }) {
   };
 
   return (
-    <form className="panel grid" onSubmit={handleSubmit}>
+    <form onSubmit={handleSubmit} style={{ padding: '32px', borderRadius: '24px', background: 'rgba(15, 23, 42, 0.75)', border: '1px solid rgba(148, 163, 184, 0.16)', color: '#e5e7eb', display: 'grid', gap: '24px', boxShadow: '0 25px 60px rgba(0,0,0,0.35)' }}>
       <div>
-        <h2>Start screening session</h2>
-        <p className="muted">Use a resume file or pasted text to seed the interview.</p>
+        <h2 style={{ fontSize: '1.8rem', fontWeight: 800, color: '#f8fafc', margin: '0 0 6px 0' }}>Start screening session</h2>
+        <p style={{ margin: 0, fontSize: '0.9rem', color: '#94a3b8' }}>Use a resume file or pasted text to seed the evaluation vector.</p>
       </div>
-      <div className="split">
-        <div className="field">
-          <label htmlFor="candidate-name">Candidate name</label>
+      
+      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: '240px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <label htmlFor="candidate-name" style={{ fontSize: '0.82rem', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase' }}>Candidate name</label>
           <input
             id="candidate-name"
             value={candidateName}
             onChange={(event) => setCandidateName(event.target.value)}
             placeholder="Enter candidate name"
+            style={{ padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(148, 163, 184, 0.2)', background: 'rgba(30, 41, 59, 0.5)', color: '#f8fafc', outline: 'none' }}
           />
         </div>
 
-        <div className="field">
-          <label htmlFor="role">Role</label>
-          <select id="role" value={role} onChange={(event) => setRole(event.target.value)}>
+        <div style={{ flex: 1, minWidth: '240px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <label htmlFor="role" style={{ fontSize: '0.82rem', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase' }}>Target Role Profile</label>
+          <select 
+            id="role" 
+            value={role} 
+            onChange={(event) => setRole(event.target.value)}
+            style={{ padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(148, 163, 184, 0.2)', background: '#1e293b', color: '#f8fafc', outline: 'none', cursor: 'pointer' }}
+          >
             <option value="backend engineer">Backend Engineer</option>
             <option value="ai ml engineer">AI / ML Engineer</option>
             <option value="frontend engineer">Frontend Engineer</option>
@@ -82,35 +81,41 @@ export default function ResumeUpload({ onSessionCreated }) {
         </div>
       </div>
 
-      <div className="field">
-        <label htmlFor="resume-file">Resume file</label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <label htmlFor="resume-file" style={{ fontSize: '0.82rem', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase' }}>Resume Passing Core (PDF/TXT)</label>
         <input
           id="resume-file"
           type="file"
           accept=".pdf,.txt"
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+          style={{ padding: '10px', borderRadius: '12px', border: '1px dashed rgba(148, 163, 184, 0.3)', background: 'rgba(30, 41, 59, 0.2)', color: '#cbd5e1', cursor: 'pointer' }}
         />
       </div>
 
-      <div className="field">
-        <label htmlFor="resume-text">Optional resume text</label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <label htmlFor="resume-text" style={{ fontSize: '0.82rem', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase' }}>Optional resume raw text</label>
         <textarea
           id="resume-text"
           value={resumeText}
           onChange={(event) => setResumeText(event.target.value)}
-          placeholder="Paste a resume here if you do not want to upload a file."
+          placeholder="Paste plain resume structural contents if file upload is bypassed..."
+          style={{ minHeight: '90px', padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(148, 163, 184, 0.2)', background: 'rgba(30, 41, 59, 0.5)', color: '#f8fafc', outline: 'none', resize: 'vertical' }}
         />
       </div>
 
       {error ? (
-        <p className="muted">{error}</p>
+        <p style={{ margin: 0, fontSize: '0.88rem', color: '#f87171', fontWeight: 500 }}>⚠️ {error}</p>
       ) : (
-        <p className="muted">Detected skills and retrieved context will be stored with the session.</p>
+        <p style={{ margin: 0, fontSize: '0.85rem', color: '#64748b', fontStyle: 'italic' }}>Detected contextual weights and parsing matrices will synchronize automatically.</p>
       )}
 
-      <div className="actions">
-        <button className="button" type="submit" disabled={loading}>
-          {loading ? "Starting interview..." : "Start interview"}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
+        <button 
+          type="submit" 
+          disabled={loading}
+          style={{ padding: '14px 28px', borderRadius: '12px', border: 'none', background: 'linear-gradient(135deg, #10b981, #059669)', color: '#fff', fontWeight: 700, cursor: loading ? 'not-allowed' : 'pointer', transition: 'all 0.2s', boxShadow: '0 4px 14px rgba(16, 185, 129, 0.3)' }}
+        >
+          {loading ? "Initializing Runtime Engine..." : "Launch Evaluation System"}
         </button>
       </div>
     </form>

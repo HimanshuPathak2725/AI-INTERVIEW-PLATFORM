@@ -26,6 +26,16 @@ export const sendInterviewResponse = async (userInput, chatHistory, currentPhase
   }
 };
 
+export const normalizeInterviewResponse = (payload) => {
+  return {
+    currentPhase: payload.current_phase ?? 'warmup',
+    technicalAccuracy: payload.technical_accuracy ?? payload.evaluation?.technical_accuracy ?? 0,
+    summary: payload.summary ?? payload.response ?? '',
+    messages: Array.isArray(payload.messages) ? payload.messages : [],
+    response: payload.response ?? '',
+  };
+};
+
 export const uploadResume = async (file) => {
   try {
     const formData = new FormData();

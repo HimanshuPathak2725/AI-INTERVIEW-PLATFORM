@@ -1,20 +1,29 @@
-from typing import Annotated, List, Dict, Any
+from typing import Annotated, List, Dict, Any, Optional
 from typing_extensions import TypedDict
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
 class InterviewState(TypedDict):
-    # add_messages allows LangGraph to append new conversation chunks automatically
-    messages: Annotated[List[BaseMessage], add_messages]
+    # Core conversation timeline using LangGraph message addition reducer
+    messages: Annotated[List[AnyMessage], add_messages]
     
-    # Metadata tracking the operational state of the interview
-    current_phase: str  # e.g., "warmup", "conceptual", "coding", "wrap_up"
+    # Candidate and Session Profile parameters
+    candidate_profile: Dict[str, Any]
+    resume_skills: List[str]
+    
+    # Engine state parameters
+    current_phase: str      # warmup, technical, behavioral, wrap_up
+    current_topic: str
+    covered_topics: List[str]
+    difficulty: str         # easy, medium, hard
     question_count: int
-    max_questions_per_phase: int
     
-    # Live evaluation metrics updated dynamically after every user response
-    evaluation_scores: Dict[str, Any]  # e.g., {"technical_accuracy": 0.0, "communication": 0.0}
-    candidate_profile: Dict[str, Any]   # Extracted context from their resume (skills, stack)
+    # Security and Duplicate Prevention tracking datasets
+    asked_questions: List[str]
+    question_hashes: List[str]
     
-    # Context injected from our LangChain RAG pipeline based on the topic
+    # Retrieval and Evaluation Telemetry maps
     retrieved_context: str
+    evaluation_scores: Dict[str, Any]
+    last_feedback: str
+    conversation_summary: str

@@ -43,7 +43,17 @@ class InterviewService:
         resume_info = session.extracted_skills or {}
         role = session.role
         
-        history = self.active_sessions.get(session_id, {}).get("conversation_history", [])
+        # 1. Fetching already asked questions from DB to prevent duplicates even after restarts
+        existing_db_questions = db.query(Question).filter(Question.session_id == session_id).order_by(Question.order).all()
+        
+        # 2. Building comprehensive conversation history mapping text, topics, and difficulty
+        history = []
+        for eq in existing_db_questions:
+            history.append({
+                "question": eq.question_text,
+                "topic": eq.expected_topics[0] if eq.expected_topics else "general",
+                "difficulty": eq.difficulty
+            })
         
         query = rag_pipeline.construct_query(
             resume_info=resume_info,
@@ -61,7 +71,7 @@ class InterviewService:
         )
         
         questions = []
-        current_count = db.query(Question).filter(Question.session_id == session_id).count()
+        current_count = len(existing_db_questions)
         
         for i, q_data in enumerate(generated):
             question = Question(
@@ -83,12 +93,14 @@ class InterviewService:
             db.rollback()
             raise ValueError(f"Failed to save generated questions: {str(e)}")
         
+        # Keep in-memory tracking updated fallback support
         if session_id in self.active_sessions:
             for q in generated:
                 topic = q.get("topic", "")
                 self.active_sessions[session_id]["topics_covered"].append(topic)
                 self.active_sessions[session_id]["conversation_history"].append(
                     {
+                        "question": q["question"],
                         "topic": topic,
                         "difficulty": q.get("difficulty", "medium"),
                     }
@@ -189,19 +201,17 @@ class InterviewService:
         feedback = f"Overall Score: {avg_score}/100. "
         
         if avg_score >= 80:
-            feedback += "Strong performance. Candidate demonstrates solid understanding. "
+            return feedback + "Strong performance. Candidate demonstrates solid understanding. " + \
+                   (f"Strengths in: {', '.join(strengths[:3])}. " if strengths else "") + \
+                   (f"Areas to improve: {', '.join(gaps[:3])}. " if gaps else "") + f"Answered {answered}/{total} questions."
         elif avg_score >= 60:
-            feedback += "Good performance with some areas for improvement. "
+            return feedback + "Good performance with some areas for improvement. " + \
+                   (f"Strengths in: {', '.join(strengths[:3])}. " if strengths else "") + \
+                   (f"Areas to improve: {', '.join(gaps[:3])}. " if gaps else "") + f"Answered {answered}/{total} questions."
         else:
-            feedback += "Needs improvement in several areas. "
-        
-        if strengths:
-            feedback += f"Strengths in: {', '.join(strengths[:3])}. "
-        if gaps:
-            feedback += f"Areas to improve: {', '.join(gaps[:3])}. "
-        
-        feedback += f"Answered {answered}/{total} questions."
-        return feedback
+            return feedback + "Needs improvement in several areas. " + \
+                   (f"Strengths in: {', '.join(strengths[:3])}. " if strengths else "") + \
+                   (f"Areas to improve: {', '.join(gaps[:3])}. " if gaps else "") + f"Answered {answered}/{total} questions."
 
     def _generate_report(self, session, questions, answered, total, avg_score) -> str:
         skills = ", ".join((session.extracted_skills or {}).get("skills", [])[:8]) or "not detected"

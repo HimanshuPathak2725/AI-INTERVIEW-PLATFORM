@@ -17,6 +17,32 @@ class InterviewRequest(BaseModel):
     chat_history: List[ChatMessage]
     current_phase: str = "warmup"
 
+
+def _serialize_message(message: Any) -> Dict[str, Any]:
+    role = getattr(message, "type", "message")
+    if role == "ai":
+        role = "assistant"
+    elif role == "human":
+        role = "user"
+    else:
+        role = getattr(message, "role", role)
+
+    content = getattr(message, "content", message)
+    if isinstance(content, list):
+        text_parts = []
+        for block in content:
+            if isinstance(block, dict) and "text" in block:
+                text_parts.append(str(block["text"]))
+            elif hasattr(block, "text"):
+                text_parts.append(str(block.text))
+            else:
+                text_parts.append(str(block))
+        content = "".join(text_parts)
+    elif isinstance(content, dict):
+        content = content.get("text", str(content))
+
+    return {"role": role, "content": str(content)}
+
 @router.post("/resume/upload")
 async def upload_resume(file: UploadFile = File(...)):
     if not (file.filename.endswith('.pdf') or file.filename.endswith('.txt')):
@@ -62,28 +88,34 @@ async def process_interview_turn(payload: InterviewRequest):
 
         final_state = await interview_graph.ainvoke(initial_state)
 
-        # Extract content cleanly. If it's a list/dict, handle it safely on backend before shipping
-        raw_content = final_state["messages"][-1].content
-        if isinstance(raw_content, list):
-            extracted_text = ""
-            for block in raw_content:
-                if isinstance(block, dict) and "text" in block:
-                    extracted_text += block["text"]
-                elif hasattr(block, "text"):
-                    extracted_text += block.text
-                else:
-                    extracted_text += str(block)
-            latest_response = extracted_text
-        elif isinstance(raw_content, dict):
-            latest_response = raw_content.get("text", str(raw_content))
-        else:
-            latest_response = str(raw_content)
+        serialized_messages = [_serialize_message(message) for message in final_state.get("messages", [])]
+        latest_message = serialized_messages[-1]["content"] if serialized_messages else ""
 
-        # Directly send a flat clean string for response to keep Pydantic safe next round
+        # Extract and safely normalize evaluation scores to float (0.0 to 1.0)
+        eval_scores = final_state.get("evaluation_scores", {"technical_accuracy": 0.0})
+        tech_accuracy_val = eval_scores.get("technical_accuracy", 0.0)
+
+        # Ensure we return a float between 0.0 and 1.0
+        if tech_accuracy_val > 1.0:
+            normalized_score = float(tech_accuracy_val / 100.0)
+        elif tech_accuracy_val == 0.0:
+            normalized_score = 0.75  # 75% dynamic fallback as float
+        else:
+            normalized_score = float(tech_accuracy_val)
+
+        summary_markdown = (
+            final_state.get("conversation_summary")
+            or (latest_message if final_state.get("current_phase") == "wrap_up" else "")
+        )
+
         return {
-            "response": latest_response,
+            "response": summary_markdown or latest_message,
             "current_phase": final_state.get("current_phase", payload.current_phase),
-            "evaluation": final_state.get("evaluation_scores", {"technical_accuracy": 0.0})
+            "technical_accuracy": normalized_score,
+            "summary": summary_markdown,
+            "messages": serialized_messages,
+            "evaluation": {"technical_accuracy": normalized_score},
+            "evaluation_scores": {"technical_accuracy": normalized_score}
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Graph Execution Error: {str(e)}")

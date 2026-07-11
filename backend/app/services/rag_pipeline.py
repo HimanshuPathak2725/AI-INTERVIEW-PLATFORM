@@ -236,18 +236,35 @@ class RAGPipeline:
             except Exception as exc:
                 log.error("[RAG] Index load aborted, resetting indices: %s", exc)
 
-    async def ingest_document_async(self, file_path: str, role: str) -> bool:
+    async def ingest_document_async(self, file_path: str, role: str, wait: bool = False) -> bool:
         """
-        Schedules document processing into an asynchronous worker task thread 
+        Schedules document processing into an asynchronous worker task thread
         so that the incoming HTTP transmission request thread never experiences block latency.
+
+        Args:
+            file_path: Path to the document to ingest
+            role: Role category for the document
+            wait: If True, awaits task completion before returning. If False, schedules background task.
+
+        Returns:
+            True if document exists and ingestion was scheduled/completed, False otherwise
         """
         path = Path(file_path)
         if not path.exists():
             return False
 
-        # Instantly hand-off processing loop to an independent asynchronous task lifecycle
-        asyncio.create_task(self._process_ingestion_job(path, role))
-        return True
+        if wait:
+            # Await completion for use cases that require synchronous behavior (e.g., testing, verification)
+            try:
+                await self._process_ingestion_job(path, role)
+                return True
+            except Exception as e:
+                log.error("[RAG] Synchronous ingestion failed for %s: %s", path.name, e)
+                return False
+        else:
+            # Instantly hand-off processing loop to an independent asynchronous task lifecycle
+            asyncio.create_task(self._process_ingestion_job(path, role))
+            return True
 
     async def _process_ingestion_job(self, path: Path, role: str) -> None:
         try:

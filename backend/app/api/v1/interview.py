@@ -96,12 +96,14 @@ async def process_interview_turn(payload: InterviewRequest):
         tech_accuracy_val = eval_scores.get("technical_accuracy", 0.0)
 
         # Ensure we return a float between 0.0 and 1.0
+        # Convert percentage-style values (> 1.0) to decimal
         if tech_accuracy_val > 1.0:
             normalized_score = float(tech_accuracy_val / 100.0)
-        elif tech_accuracy_val == 0.0:
-            normalized_score = 0.75  # 75% dynamic fallback as float
         else:
             normalized_score = float(tech_accuracy_val)
+
+        # Clamp to valid range [0.0, 1.0]
+        normalized_score = max(0.0, min(1.0, normalized_score))
 
         summary_markdown = (
             final_state.get("conversation_summary")

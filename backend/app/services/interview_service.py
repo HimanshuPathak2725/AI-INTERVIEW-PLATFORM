@@ -107,22 +107,37 @@ class InterviewService:
                 )
                 db.add(new_ans)
 
-        # 7. Persist the newly generated question into DB to lock state
-        new_db_question = Question(
-            session_id=session_id,
-            question_text=ai_response,
-            context_used=final_state.get("retrieved_context", "Direct Context Matrix"),
-            expected_topics=[final_state.get("current_topic", "Technical Stack")],
-            difficulty=final_state.get("difficulty", "easy"),
-            order=len(db_questions) + 1
+        # 7. Detect final scorecard state and skip persisting it as a Question
+        # Final reports are identified by conversation_summary or wrap_up phase
+        is_final_scorecard = (
+            final_state.get("conversation_summary")
+            or final_state.get("current_phase") == "wrap_up"
         )
-        
-        try:
-            db.add(new_db_question)
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            raise ValueError(f"Failed to synchronize state tracking with database: {str(e)}")
+
+        if not is_final_scorecard:
+            # Persist the newly generated question into DB to lock state
+            new_db_question = Question(
+                session_id=session_id,
+                question_text=ai_response,
+                context_used=final_state.get("retrieved_context", "Direct Context Matrix"),
+                expected_topics=[final_state.get("current_topic", "Technical Stack")],
+                difficulty=final_state.get("difficulty", "easy"),
+                order=len(db_questions) + 1
+            )
+
+            try:
+                db.add(new_db_question)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                raise ValueError(f"Failed to synchronize state tracking with database: {str(e)}")
+        else:
+            # Persist final report through session summary (commit answer changes only)
+            try:
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                raise ValueError(f"Failed to save final evaluation data: {str(e)}")
 
         return ai_response
 
@@ -133,7 +148,7 @@ class InterviewService:
         session = db.query(InterviewSession).filter(InterviewSession.id == session_id).first()
         if not session:
             raise ValueError("Session not found")
-        
+
         session.status = "completed"
         session.completed_at = datetime.utcnow()
         try:
@@ -141,22 +156,82 @@ class InterviewService:
         except Exception as e:
             db.rollback()
             raise ValueError(f"Failed to complete session: {str(e)}")
-        
+
         questions = self.get_session_questions(db, session_id)
         total = len(questions)
-        answered = sum(1 for q in questions if db.query(Answer).filter(Answer.question_id == q.id).first())
-        
+
+        # Aggregate actual evaluation data from Answer results
+        answers = []
+        scores = []
+        all_feedback = []
+
+        for q in questions:
+            ans = db.query(Answer).filter(Answer.question_id == q.id).first()
+            if ans:
+                answers.append(ans)
+                if ans.score is not None:
+                    scores.append(ans.score)
+                if ans.feedback:
+                    all_feedback.append(ans.feedback)
+
+        answered = len(answers)
+
+        # Derive average_score from actual stored scores
+        average_score = sum(scores) / len(scores) if scores else 0.0
+
+        # Extract strengths and gaps from feedback patterns
+        # Simple heuristic: look for positive and negative indicators
+        strengths = []
+        gaps = []
+        for feedback in all_feedback:
+            feedback_lower = feedback.lower()
+            if any(word in feedback_lower for word in ["strong", "excellent", "good", "solid", "clear"]):
+                strengths.append(feedback[:100])  # Truncate for brevity
+            if any(word in feedback_lower for word in ["missing", "weak", "gap", "improve", "lack", "insufficient"]):
+                gaps.append(feedback[:100])
+
+        # Remove duplicates and limit to reasonable count
+        strengths = list(dict.fromkeys(strengths))[:5]
+        gaps = list(dict.fromkeys(gaps))[:5]
+
+        # If no specific strengths/gaps found, provide generic feedback
+        if not strengths:
+            strengths = ["Completed interview session"] if answered > 0 else []
+        if not gaps:
+            gaps = ["Further evaluation needed"] if answered < total else []
+
+        # Derive overall feedback from average performance
+        if average_score >= 80:
+            overall_feedback = "Strong performance across technical assessments."
+        elif average_score >= 60:
+            overall_feedback = "Solid understanding with room for improvement in specific areas."
+        elif average_score >= 40:
+            overall_feedback = "Partial understanding demonstrated; additional preparation recommended."
+        else:
+            overall_feedback = "Significant gaps identified in technical knowledge."
+
+        # Generate report summary
+        generated_report = (
+            f"# Interview Summary for {session.role}\n\n"
+            f"**Questions Asked:** {total}\n"
+            f"**Questions Answered:** {answered}\n"
+            f"**Average Score:** {average_score:.1f}%\n\n"
+            f"## Strengths\n" + "\n".join([f"- {s}" for s in strengths]) + "\n\n"
+            f"## Areas for Improvement\n" + "\n".join([f"- {g}" for g in gaps]) + "\n\n"
+            f"## Overall Assessment\n{overall_feedback}"
+        )
+
         summary = InterviewSummary(
             session_id=session_id,
             role=session.role,
             total_questions=total,
             answered_questions=answered,
             skills_tested=list(set((session.extracted_skills or {}).get("skills", []))),
-            average_score=75.0, # Baseline execution metric aggregation
-            strengths=["System Metrics Architecture"],
-            gaps=["Distributed Locks Edge Cases"],
-            overall_feedback="Turn evaluation pipeline executed efficiently through Graph Runtime.",
-            generated_report=f"Role: {session.role}. Core evaluation turn synchronized safely."
+            average_score=average_score,
+            strengths=strengths,
+            gaps=gaps,
+            overall_feedback=overall_feedback,
+            generated_report=generated_report
         )
         return summary
 

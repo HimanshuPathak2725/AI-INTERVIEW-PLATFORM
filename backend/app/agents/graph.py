@@ -22,6 +22,7 @@ def assessment_router(state: InterviewState) -> str:
     """
     Deterministically updates the interview phase using the total number of assistant questions.
     The router runs after question generation so the next turn starts in the correct phase.
+    Finalizes only when 5 questions have been answered, not when the 5th question is generated.
     """
     messages = state.get("messages", [])
     total_ai_questions = sum(
@@ -31,7 +32,17 @@ def assessment_router(state: InterviewState) -> str:
         or getattr(message, "role", "") == "assistant"
     )
 
-    if total_ai_questions >= 5:
+    # Count human responses to determine how many questions have been answered
+    total_human_responses = sum(
+        1
+        for message in messages
+        if getattr(message, "type", "") == "human"
+        or getattr(message, "role", "") == "user"
+    )
+
+    # Finalize only when 5 prior questions have been answered (5 AI questions + 5 human answers)
+    # This ensures the 5th question remains available for the candidate to answer
+    if total_ai_questions >= 5 and total_human_responses >= 5:
         state["current_phase"] = "wrap_up"
         return "finalize_interview"
 

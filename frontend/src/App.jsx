@@ -1,5 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { sendInterviewResponse, uploadResume } from './services/interviewApi';
+import React, { useEffect, useRef, useState } from 'react';
+import ScorecardView from './components/ScorecardView';
+import { normalizeInterviewResponse, sendInterviewResponse, uploadResume } from './services/interviewApi';
 
 export default function App() {
   const [messages, setMessages] = useState([
@@ -9,6 +10,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [phase, setPhase] = useState('warmup');
   const [score, setScore] = useState(0.1);
+  const [summaryData, setSummaryData] = useState('');
   const [uploadStatus, setUploadStatus] = useState('');
   const chatEndRef = useRef(null);
 
@@ -47,14 +49,13 @@ export default function App() {
 
     try {
       const result = await sendInterviewResponse(currentInput, freshMessages, phase);
+      const normalized = normalizeInterviewResponse(result);
       
-      setPhase(result.current_phase || phase);
-      if (result.evaluation?.technical_accuracy !== undefined) {
-        setScore(result.evaluation.technical_accuracy);
-      }
+      setPhase(normalized.currentPhase || phase);
+      setScore(normalized.technicalAccuracy ?? score);
+      setSummaryData(normalized.summary || '');
       
-      // Backend guarantees a clean text string now
-      const aiResponse = result.response || "No structured response received.";
+      const aiResponse = normalized.response || "No structured response received.";
       setMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
     } catch (err) {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Connection timed out or state schema mismatch.' }]);
@@ -62,6 +63,16 @@ export default function App() {
       setLoading(false);
     }
   };
+
+  if (phase === 'wrap_up') {
+    return (
+      <ScorecardView
+        summary={summaryData}
+        score={score}
+        onClose={() => window.location.reload()}
+      />
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', backgroundColor: '#0f172a', color: '#f8fafc', fontFamily: 'sans-serif', padding: '20px' }}>
